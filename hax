@@ -1,0 +1,1501 @@
+var room = HBInit({
+  roomName: "2️⃣💎 4V4 IDA & VUELTA-PENALES 💎6️⃣",
+  maxPlayers: 25,
+  public: false,
+  playerName: " ",
+});
+
+// ================= CONFIG TIEMPOS =================
+var TIEMPO_REGLA = 120;
+var EXTRAS_POSIBLES = [20, 25, 30];
+var CUENTA_EXTRA = 3;
+var DELAY_VUELTA_MS = 3000;
+
+// ================= CHAT QUEUE =================
+var chatQueue = [];
+var chatRunning = false;
+var CHAT_STEP = 0;
+var YIELD_EVERY = 10;
+var YIELD_MS = 15;
+
+function qChat(line){ chatQueue.push(line); runChatQueue(); }
+function qLines(lines){ for (let i=0;i<lines.length;i++) chatQueue.push(lines[i]); runChatQueue(); }
+
+function runChatQueue(){
+  if(chatRunning) return;
+  chatRunning = true;
+  let sent = 0;
+
+  (function tick(){
+    if(chatQueue.length === 0){ chatRunning = false; return; }
+    room.sendChat(chatQueue.shift());
+    sent++;
+    setTimeout(tick, (sent % YIELD_EVERY === 0) ? YIELD_MS : CHAT_STEP);
+  })();
+}
+
+function burstChat(line){ room.sendChat(line); }
+function burstLines(lines){ for(let i=0;i<lines.length;i++) room.sendChat(lines[i]); }
+
+function decoTop(){ return "✨🌟══════════════════════════════🌟✨"; }
+function decoBot(){ return "✨🌟══════════════════════════════🌟✨"; }
+
+// ================= PM (solo 1 jugador) + HELPERS =================
+function pm(id, msg){
+  // En HaxBall Headless: sendAnnouncement(msg, targetId, color, style, sound)
+  try { room.sendAnnouncement(msg, id, 0xFFFFFF, 0, 0); }
+  catch(e){ try{ room.sendChat(msg); }catch(_){} }
+}
+// ================= BIENVENIDA (3 MENSAJES EXPLICANDO TODO) =================
+var bienvenidaCooldown = {};
+var BIENVENIDA_CD_MS = 90000;
+
+function isNewAccount(player){
+  return !player || !player.auth || player.auth.length < 5;
+}
+
+function sendBienvenida3(player){
+  if(!player) return;
+
+  let auth = player.auth || ("noauth_" + player.id);
+  let now = Date.now();
+
+
+  pm(player.id, decoTop());
+  pm(player.id, "⚽ MODO: 4V4 COMPETITIVO");
+  pm(player.id, "💎 Economía  (monedas cuentan).");
+  pm(player.id, "📌 Serie: IDA & VUELTA + PENALES si GLOBAL empata.");
+  pm(player.id, "🆘 Comandos: !help | !ida | !global | !stats \"Nombre\"");
+  pm(player.id, decoBot());
+
+  pm(player.id, decoTop());
+  pm(player.id, "💰 MONEDAS (guardadas por AUTH)");
+  pm(player.id, "✅ Inicial: 10 monedas");
+  pm(player.id, "🏁 Ganancias:");
+  pm(player.id, "• Gol: +1");
+  pm(player.id, "• Ganar partido: +3");
+  pm(player.id, "• Empate: +2");
+  pm(player.id, "• MVP: +4");
+  pm(player.id, "⚠️ El x2 NO aplica en apuestas.");
+  pm(player.id, decoBot());
+
+  pm(player.id, decoTop());
+  pm(player.id, "🎲 APUESTAS (solo a TU equipo)");
+  pm(player.id, "❌ Prohibido apostar contra tu team");
+  pm(player.id, "✅ Min: 1 moneda");
+  pm(player.id, "✅ Max: Team 3 | Empate 2");
+  pm(player.id, "📈 Cuotas: Team x1.8 | Empate x3 (redondeo ↓)");
+  pm(player.id, "⛔ Se CIERRAN apuestas:");
+  pm(player.id, "• a los 10s de iniciar el partido");
+  pm(player.id, "• o cuando hay 1er gol");
+  pm(player.id, "🛒 TIENDA: power, +tiempo, -tiempo rival, caja random, votekick, voteban, ban perm.");
+  pm(player.id, "🚫 ANTI-ABUSO: 1 jugador/IP en cancha | no vender partidos");
+  pm(player.id, decoBot());
+
+  if(isNewAccount(player)){
+    pm(player.id, "⚠️ CUENTA NUEVA: DESPUES DE 3M. PORDRAS USAR APUESTAS");
+  }
+}
+
+function fmtTime(sec){
+  sec = Math.max(0, sec|0);
+  let m = Math.floor(sec/60), s = sec%60;
+  return m + ":" + (s<10?"0":"") + s;
+}
+
+function findPlayerByNameLoose(name){
+  let list = room.getPlayerList();
+  let exact = list.find(p => p.name === name);
+  if(exact) return exact;
+
+  let low = (name||"").toLowerCase().trim();
+  if(!low) return null;
+
+  let eq = list.find(p => (p.name||"").toLowerCase() === low);
+  if(eq) return eq;
+
+  return list.find(p => (p.name||"").toLowerCase().includes(low)) || null;
+}
+
+// ================= COMANDOS (TODOS) =================
+function cmdHelp(targetId){
+  pm(targetId, "📌 COMANDOS DISPONIBLES:");
+  pm(targetId, "• !help");
+  pm(targetId, "• !ida");
+  pm(targetId, '• !stats "Nombre"');
+  pm(targetId, "• !global");
+  pm(targetId, "• !arquero / !noarquero  (solo si el GLOBAL empata)");
+  pm(targetId, '• CAPITANES: !cambio "Sale" "Entra" (1 por serie)');
+  pm(targetId, '• ADMIN: !on / !off | !capitan "Nombre" | !nocapitan "Nombre" | !penal');
+}
+
+function cmdIda(targetId){
+  let sc = room.getScores();
+
+  // si la IDA está en juego ahora mismo
+  if(sc && fase === "IDA"){
+    pm(targetId, `🟦 IDA (EN JUEGO): 🔵 ${sc.blue} - ${sc.red} 🔴 | ⏱️ ${sc.time}s`);
+    return;
+  }
+
+  // si ya terminó la IDA (guardado)
+  if(idaTermino){
+    pm(targetId, `🟦 IDA (FINAL): 🔵 ${idaScore.blue} - ${idaScore.red} 🔴`);
+    return;
+  }
+
+  pm(targetId, "🟦 IDA aún no se jugó.");
+}
+
+function cmdGlobal(targetId){
+  if(!sistemaActivo){
+    pm(targetId, "⚠️ No hay serie activa.");
+    return;
+  }
+  let A = serieGoals[1] || 0;
+  let B = serieGoals[2] || 0;
+
+  pm(targetId, decoTop());
+  pm(targetId, "🌍 GLOBAL (GOLES REALES)");
+  pm(targetId, `${serieLabel[1]} ${A} ─ ${B} ${serieLabel[2]}`);
+  pm(targetId, `📌 Fase: ${fase}`);
+  pm(targetId, decoBot());
+}
+
+function cmdStats(targetId, name){
+  if(!name || !name.trim()){
+    pm(targetId, 'Uso: !stats "Nombre"');
+    return;
+  }
+
+  let p = findPlayerByName(name) || findPlayerByNameLoose(name);
+  if(!p){
+    pm(targetId, `❌ No encuentro a "${name}" (debe estar conectado).`);
+    return;
+  }
+
+  let id = p.id;
+
+  pm(targetId, `📊 ${p.name} | ⚽ ${goles[id]||0} | 🎁 ${asistencias[id]||0} | 😵 ${autogoles[id]||0} | ⏱️ ${fmtTime(tiempo[id]||0)}`);
+  pm(targetId, `Partido | ⚽ ${golesPartido[id]||0} | 🎁 ${asistPartido[id]||0} | 😵 ${ogPartido[id]||0} | ⏱️ ${fmtTime(tiempoPartido[id]||0)}`);
+}
+
+// ================= UTIL =================
+function parseArgs(msg){
+  // soporta: !cmd a b | !cmd "nombre con espacios" "otro nombre"
+  let re = /"([^"]+)"|'([^']+)'|(\S+)/g;
+  let out = [], m;
+  while((m = re.exec(msg)) !== null) out.push(m[1] || m[2] || m[3]);
+  return out;
+}
+function findPlayerByName(name){
+  return room.getPlayerList().find(p => p.name === name) || null;
+}
+function getNameById(id){
+  let p = room.getPlayerList().find(x => x.id === id);
+  return p ? p.name : ("ID " + id);
+}
+function setAvatarSafe(id, avatar){
+  try{
+    room.setPlayerAvatar(id, avatar || "");
+  }catch(e){}
+}
+
+// ================= TIME MULTIPLIER =================
+var timeMultiplier = 1; // 1 = normal
+
+// ================= ESTADO =================
+var sistemaActivo = false;
+var fase = "IDA";
+var idaScore = { blue: 0, red: 0 };
+var bloqueo = false;
+var enPausa = false;
+var idaTermino = false; // ✅ para !ida
+
+var lastScore = { blue: 0, red: 0, time: 0 };
+var lastScoreValido = false;
+
+var vueltaConEquiposInvertidos = false;
+
+// ✅ Penales solo si GLOBAL empata
+var penalesHabilitados = false;
+
+// ✅ Identidad real de la serie (para global sin confusión)
+var serieTeamOf = {};        // playerId -> 1 o 2 (equipos del momento de !on)
+var serieGoals = {1:0, 2:0}; // goles globales por equipo real
+var serieLabel = {1:"🔴 ROJO (IDA)", 2:"🔵 AZUL (IDA)"}; // nombres para mostrar
+
+// ================= CAPITANES + CAMBIOS =================
+// 1 = ROJO (real), 2 = AZUL (real)
+var capitan = { 1: null, 2: null };        // id del capitán por equipo REAL
+var cambioUsado = { 1: false, 2: false };  // 1 cambio por equipo por serie
+
+function realToPhysicalTeam(realTeam){
+  // cuando ya estamos en VUELTA (swap aplicado), lo físico está invertido
+  return vueltaConEquiposInvertidos ? (realTeam === 1 ? 2 : 1) : realTeam;
+}
+
+// ✅ IMPORTANTE: durante "bloqueo" (transición IDA->VUELTA) AÚN NO se aplicó swapEquipos.
+// En ese momento, aunque vueltaConEquiposInvertidos ya esté true, los equipos físicos siguen siendo de IDA.
+function realToPhysicalTeamNow(realTeam){
+  if(vueltaConEquiposInvertidos && bloqueo) return realTeam; // todavía en layout IDA
+  return realToPhysicalTeam(realTeam);
+}
+
+// conversión física->real (considerando el mismo caso especial de bloqueo)
+function physicalToRealTeamNow(physicalTeam){
+  if(physicalTeam === 0) return 0;
+  if(vueltaConEquiposInvertidos && bloqueo) return physicalTeam; // todavía en layout IDA
+  return vueltaConEquiposInvertidos ? (physicalTeam === 1 ? 2 : 1) : physicalTeam;
+}
+
+function captainRealTeamOfPlayer(p){
+  if(p.id === capitan[1]) return 1;
+  if(p.id === capitan[2]) return 2;
+  return 0;
+}
+
+function setCaptain(realTeam, playerId){
+  if(capitan[realTeam] && capitan[realTeam] !== playerId){
+    try{ room.setPlayerAvatar(capitan[realTeam], ""); }catch(e){}
+  }
+  capitan[realTeam] = playerId;
+  try{ room.setPlayerAvatar(playerId, "🧢"); }catch(e){}
+}
+
+function clearCaptain(realTeam){
+  if(capitan[realTeam]){
+    try{ room.setPlayerAvatar(capitan[realTeam], ""); }catch(e){}
+  }
+  capitan[realTeam] = null;
+}
+
+function moveRealTeamToSpec(realTeam){
+  room.getPlayerList().forEach(p=>{
+    if(p.team !== 0 && serieTeamOf[p.id] === realTeam){
+      room.setPlayerTeam(p.id, 0);
+    }
+  });
+}
+
+// ================= CONTROL EXTRA =================
+var extraEnCuenta = false;
+var extraActivo = false;
+var extraBase = 0;
+var extraReal = 0;
+var extraEndTime = 0;
+
+// ================= STATS (global) =================
+var goles = {}, asistencias = {}, autogoles = {}, tiempo = {}, racha = {};
+var ultimoGol = null, ultimoTocador = null, penultimoTocador = null;
+var ultimoTocadorTime = 0, penultimoTocadorTime = 0;
+
+var jugoIda = new Set(), jugoVuelta = new Set();
+
+// ================= STATS (por partido para MVP) =================
+var golesPartido = {}, asistPartido = {}, ogPartido = {}, tiempoPartido = {};
+
+// ================= CAMISETAS =================
+function ponerCamisetas() {
+  room.setTeamColors(1, 1, 0x0033A0, [0xFFFFFF], 90);
+  room.setTeamColors(2, 0, 0xF5F5DC, [0x8B0000], 0);
+}
+
+// ================= NARRACIÓN =================
+var narracionesGol = [
+  "⚽🔥 GOOOOLAZO de {p}", "🚀 Misil imparable de {p}", "🎯 Definición perfecta de {p}",
+  "💥 Remate letal de {p}", "🧠 Gol inteligente de {p}", "⚡  AQQ Rayo al arco de {p}",
+  "🥶 Frialdad total de {p}", "🎉 Explota el estadio, gol de {p}"
+];
+function narrarGol(nombre) {
+  var frase = narracionesGol[Math.floor(Math.random()*narracionesGol.length)];
+  room.sendChat(frase.replace("{p}", nombre));
+}
+function anunciarGolesEspecialesPorPartido(nombre, n){
+  if(n === 6) room.sendChat(`💎⚽ SEXTETE BESTIAL de ${nombre}! (6)`);
+  if(n === 7) room.sendChat(`🚨⚽⚽⚽ LOCURA TOTAL: ${nombre} lleva 7 GOLES!`);
+  if(n === 8) room.sendChat(`👑🔥 HISTÓRICO: ${nombre} METIÓ 8 GOLES!!!`);
+}
+
+// ================= CUENTA REGRESIVA (3s) =================
+function cuentaRegresiva3(cb) {
+  qLines(["⏳ 3...", "⏳ 2...", "⏳ 1..."]);
+  setTimeout(()=>{ if(cb) cb(); }, 900);
+}
+
+// ================= CAMBIO DE ARCO (SWAP EQUIPOS) =================
+function swapEquipos(){
+  let players = room.getPlayerList();
+  players.forEach(p=>{
+    if(p.team === 1) room.setPlayerTeam(p.id, 2);
+    else if(p.team === 2) room.setPlayerTeam(p.id, 1);
+  });
+}
+function randomPlayerFromSerieTeam(teamReal){
+  let players = room.getPlayerList().filter(p => p.team !== 0);
+  let pool = players.filter(p => serieTeamOf[p.id] === teamReal);
+  if(pool.length === 0) return null;
+  return pool[Math.floor(Math.random()*pool.length)];
+}
+
+// ================= MVP =================
+function MVPFromMaps(ids, titulo, gMap, aMap, tMap, ogMap, instant){
+  if(!ids || ids.length === 0) return;
+
+  ids = ids.filter(id => room.getPlayerList().some(p=>p.id===id) || true);
+  ids.sort((a,b)=>
+    (gMap[b]||0)-(gMap[a]||0) ||
+    (aMap[b]||0)-(aMap[a]||0) ||
+    (tMap[b]||0)-(tMap[a]||0)
+  );
+
+  let topId = ids[0];
+  let p = room.getPlayerList().find(x=>x.id===topId) || {name: `ID ${topId}`};
+
+  let g = (gMap[topId]||0);
+  let a = (aMap[topId]||0);
+  let og = (ogMap[topId]||0);
+
+  let lines = [
+    decoTop(),
+    "🏆 " + titulo,
+    "👑 " + p.name,
+    "⚽ Goles: " + g + " | 🎁 Asistencias: " + a,
+    "😵 Autogoles: " + og,
+    decoBot()
+  ];
+
+  if(instant) burstLines(lines);
+  else qLines(lines);
+}
+
+function MVP_IDA(){ MVPFromMaps([...jugoIda], "MVP DE LA IDA", golesPartido, asistPartido, tiempoPartido, ogPartido, false); }
+function MVP_VUELTA(){ MVPFromMaps([...jugoVuelta], "MVP DE LA VUELTA", golesPartido, asistPartido, tiempoPartido, ogPartido, true); }
+function MVP_SERIE(){ MVPFromMaps(Object.keys(goles).map(Number), "MVP DE LA SERIE", goles, asistencias, tiempo, autogoles, true); }
+
+// ================= RESET PARTIDO =================
+function resetPorPartido(){
+  extraEnCuenta = false;
+  extraActivo = false;
+  extraBase = 0;
+  extraReal = 0;
+  extraEndTime = 0;
+
+  lastScoreValido = false;
+  lastScore = { blue: 0, red: 0, time: 0 };
+
+  ultimoTocador = null;
+  penultimoTocador = null;
+  ultimoTocadorTime = 0;
+  penultimoTocadorTime = 0;
+
+  golesPartido = {};
+  asistPartido = {};
+  ogPartido = {};
+  tiempoPartido = {};
+  ultimoGol = null;
+  racha = {};
+}
+
+// ================= GAME START =================
+room.onGameStart = function () {
+  bloqueo = false;
+  ponerCamisetas();
+  resetPorPartido();
+
+  // ✅ Anunciar capitanes al iniciar (CAPITANES REALES)
+  let capR = capitan[1] ? getNameById(capitan[1]) : "—";
+  let capB = capitan[2] ? getNameById(capitan[2]) : "—";
+  room.sendChat(`🧢 CAPITANES | 🔴 ROJO: ${capR}  |  🔵 AZUL: ${capB}`);
+
+  room.getPlayerList().forEach(p=>{
+    if(p.team !== 0){
+      if(fase==="IDA") jugoIda.add(p.id);
+      if(fase==="VUELTA") jugoVuelta.add(p.id);
+    }
+  });
+};
+
+// ================= PAUSA =================
+room.onGamePause = ()=> enPausa = true;
+room.onGameUnpause = ()=> enPausa = false;
+
+// ================= CONTADOR TIEMPO =================
+setInterval(()=>{
+  if(!sistemaActivo || bloqueo || enPausa) return;
+
+  for(let i = 0; i < timeMultiplier; i++){
+    room.getPlayerList().forEach(p=>{
+      if(p.team!==0){
+        tiempo[p.id] = (tiempo[p.id]||0) + 1;
+        tiempoPartido[p.id] = (tiempoPartido[p.id]||0) + 1;
+
+        if(fase==="IDA") jugoIda.add(p.id);
+        if(fase==="VUELTA") jugoVuelta.add(p.id);
+      }
+    });
+  }
+},1000);
+
+// ================= RECORDATORIO CAPITANES (PM cada 35s) =================
+setInterval(()=>{
+  if(!sistemaActivo || fase === "FIN") return;
+
+  [1,2].forEach(rt=>{
+    let capId = capitan[rt];
+    if(!capId) return;
+
+    // debe estar conectado
+    let capP = room.getPlayerList().find(p=>p.id===capId);
+    if(!capP) return;
+
+    // si ya usó cambio, no recordar
+    if(cambioUsado[rt]) return;
+
+    pm(capId, `🧢 Capitán ${rt===1?"🔴 ROJO":"🔵 AZUL"}: tienes 1 cambio ✅ Usa: !cambio "Sale" "Entra" (si no pones Entra, entra espectador al azar)`);
+  });
+}, 35000);
+
+// ================= TOQUES =================
+room.onPlayerBallKick = p=>{
+  if(p.team===0) return;
+
+  // penales
+  if(penalActivo){
+    if(p.id === penShooterId){
+      penShooterKickTime = Date.now();
+      penKeeperTouched = false;
+
+      lastBallPos = room.getBallPosition();
+      lastBallMoveTime = Date.now();
+    } else if(p.id === penKeeperId){
+      if(penShooterKickTime > 0 && (Date.now() - penShooterKickTime) <= PENAL_TOUCH_WINDOW_MS){
+        penKeeperTouched = true;
+      }
+    }
+  }
+
+  penultimoTocador = ultimoTocador;
+  penultimoTocadorTime = ultimoTocadorTime;
+
+  ultimoTocador = p;
+  ultimoTocadorTime = Date.now();
+};
+
+// ================= GAME TICK =================
+room.onGameTick = function(){
+  if(penalActivo){
+    penTryResolveMissByBall();
+    return;
+  }
+
+  if(!sistemaActivo) return;
+
+  let s = room.getScores();
+  if(!s) return;
+
+  lastScore.blue = s.blue;
+  lastScore.red = s.red;
+  lastScore.time = s.time;
+  lastScoreValido = true;
+
+  if(!extraActivo && !extraEnCuenta && s.time >= TIEMPO_REGLA / timeMultiplier){
+
+    let diff = Math.abs(s.blue - s.red);
+
+    if(diff >= 4){ room.stopGame(); return; }
+    if(diff === 3 && Math.random() < 0.60){ room.stopGame(); return; }
+
+    extraEnCuenta = true;
+    room.pauseGame(true);
+
+    qLines([decoTop(), "⏱️ FIN DEL REGLAMENTARIO (" + TIEMPO_REGLA + "s)", "⚡ TIEMPO EXTRA EN:", decoBot()]);
+
+    cuentaRegresiva3(()=>{
+      extraBase = EXTRAS_POSIBLES[Math.floor(Math.random()*EXTRAS_POSIBLES.length)];
+      extraReal = extraBase + CUENTA_EXTRA;
+      extraEndTime = TIEMPO_REGLA + extraReal;
+      extraActivo = true;
+
+      qLines([
+        decoTop(),
+        "✨ TIEMPO EXTRA",
+        "➕ Base: " + extraBase + "s  |  ⏳ +" + CUENTA_EXTRA + "s = " + extraReal + "s",
+        "🏁 Termina en: " + extraEndTime + "s",
+        decoBot()
+      ]);
+
+      room.pauseGame(false);
+    });
+  }
+
+  if(extraActivo && s.time >= extraEndTime){
+    room.stopGame();
+  }
+};
+
+// ================= GOLES =================
+room.onTeamGoal = function(team){
+  // =============== PENALES ===============
+  if(penalActivo){
+    if(!penAttemptLive) return;
+    penAttemptLive = false;
+
+    let logicalKickTeam = penTurnTeam;
+    let kickReal = mapTeam(logicalKickTeam);
+    let defReal  = (kickReal === 1 ? 2 : 1);
+
+    penShots[logicalKickTeam]++;
+
+    let kp = penPlayerById(penKeeperId);
+    let sp = penPlayerById(penShooterId);
+
+    if(team === kickReal){
+      penGoals[logicalKickTeam]++;
+      penResolveAndNext(`✅ GOL de ${sp ? sp.name : "el tirador"}!`);
+    } else if(team === defReal){
+      if(penKeeperTouched) penResolveAndNext(`🧤 ATAJÓ ${kp ? kp.name : "el arquero"}!`);
+      else penResolveAndNext(`❌ ERRÓ ${sp ? sp.name : "el tirador"}!`);
+    } else {
+      penResolveAndNext("⚠️ Resultado raro (fin del intento).");
+    }
+    return;
+  }
+
+  // =============== PARTIDO NORMAL ===============
+  if(!sistemaActivo || !ultimoTocador) return;
+
+  // Autogol
+  if(ultimoTocador.team !== team){
+    autogoles[ultimoTocador.id] = (autogoles[ultimoTocador.id]||0) + 1;
+    ogPartido[ultimoTocador.id] = (ogPartido[ultimoTocador.id]||0) + 1;
+
+    room.sendChat("😵 AUTOGOL de " + ultimoTocador.name);
+
+    let ogReal = serieTeamOf[ultimoTocador.id];
+    if(ogReal === 1) serieGoals[2]++; else if(ogReal === 2) serieGoals[1]++;
+
+    return;
+  }
+
+  // Gol normal
+  let s = ultimoTocador;
+  narrarGol(s.name);
+
+  goles[s.id] = (goles[s.id]||0) + 1;
+
+  golesPartido[s.id] = (golesPartido[s.id]||0) + 1;
+  let gp = golesPartido[s.id];
+
+  let realTeam = serieTeamOf[s.id];
+  if(realTeam === 1) serieGoals[1]++; else if(realTeam === 2) serieGoals[2]++;
+
+  if(gp === 3) room.sendChat(`🎩⚽ HATTRICK de ${s.name}!`);
+  if(gp === 4) room.sendChat(`🔥⚽ PÓKER de ${s.name}!`);
+  if(gp === 5) room.sendChat(`👑⚽ REPOKER de ${s.name}!`);
+  if(gp === 6 || gp === 7 || gp === 8) anunciarGolesEspecialesPorPartido(s.name, gp);
+
+  var ventanaEntreToques = 6000;
+  if(
+    penultimoTocador &&
+    penultimoTocador.team === s.team &&
+    penultimoTocador.id !== s.id &&
+    penultimoTocadorTime > 0 &&
+    (ultimoTocadorTime - penultimoTocadorTime) <= ventanaEntreToques
+  ){
+    asistencias[penultimoTocador.id] = (asistencias[penultimoTocador.id]||0) + 1;
+    asistPartido[penultimoTocador.id] = (asistPartido[penultimoTocador.id]||0) + 1;
+    room.sendChat("🎁 Asistencia de " + penultimoTocador.name);
+  }
+
+  if(ultimoGol===s.id){
+    racha[s.id] = (racha[s.id]||1) + 1;
+    if(racha[s.id]===2) room.sendChat("🔥 Está en racha!");
+  } else {
+    ultimoGol = s.id;
+    racha[s.id] = 1;
+  }
+};
+
+// ================= GAME STOP =================
+room.onGameStop = function(){
+  timeMultiplier = 1;
+
+  if(stopFuePenal){ stopFuePenal = false; return; }
+  if(!sistemaActivo) return;
+  if(!lastScoreValido) return;
+
+  let s = { blue: lastScore.blue, red: lastScore.red };
+
+  if(fase === "IDA"){
+    idaScore.blue = s.blue;
+    idaScore.red = s.red;
+    idaTermino = true;
+    qChat(`🏁 🔵 IDA → ${idaScore.blue} - ${idaScore.red} 🔴 🏁`);
+    MVP_IDA();
+
+    // ✅ desde aquí marcamos que en VUELTA será invertido (pero el swap se hace luego)
+    vueltaConEquiposInvertidos = true;
+    qChat("🔄 CAMBIO DE ARCO: 🔵↔🔴 (se invierten equipos)");
+
+    fase = "VUELTA";
+    bloqueo = true;
+
+    qChat("⏳ Cambio de partido...");
+    qChat("🔁 VUELTA inicia en 3 segundos");
+
+    setTimeout(()=>{
+      swapEquipos();
+      bloqueo = false;
+      room.setScoreLimit(0);
+      room.setTimeLimit(0);
+      room.startGame();
+    }, DELAY_VUELTA_MS);
+
+    return;
+  }
+
+  if(fase === "VUELTA"){
+    burstChat(`🏁 🔁 VUELTA → ${s.blue} - ${s.red} 🏁`);
+    MVP_VUELTA();
+
+    let A = serieGoals[1];
+    let B = serieGoals[2];
+
+    burstLines([
+      decoTop(),
+      "🌍 RESULTADO GLOBAL (POR GOLES REALES)",
+      `${serieLabel[1]} ${A} ─ ${B} ${serieLabel[2]}`,
+      decoBot()
+    ]);
+
+    MVP_SERIE();
+
+    if(A > B){
+      penalesHabilitados = false;
+
+      burstChat(`🏆🔥 GANADOR GLOBAL: ${serieLabel[1]}`);
+      let elegido = randomPlayerFromSerieTeam(1);
+      if(elegido) burstChat(`🎲 SACA A: ${elegido.name}`);
+
+      // ✅ perdedor a spec + capitán pierde cargo (SOLO AL FINAL DE LA SERIE)
+      moveRealTeamToSpec(2);
+      clearCaptain(2);
+
+      burstChat("⛔ SERIE TERMINADA");
+      sistemaActivo = false; fase = "FIN";
+    } else if(B > A){
+      penalesHabilitados = false;
+
+      burstChat(`🏆🔥 GANADOR GLOBAL: ${serieLabel[2]}`);
+      let elegido = randomPlayerFromSerieTeam(2);
+      if(elegido) burstChat(`🎲 SACA A: ${elegido.name}`);
+
+      // ✅ perdedor a spec + capitán pierde cargo (SOLO AL FINAL DE LA SERIE)
+      moveRealTeamToSpec(1);
+      clearCaptain(1);
+
+      burstChat("⛔ SERIE TERMINADA");
+      sistemaActivo = false; fase = "FIN";
+    } else {
+      // ✅ empate => nadie pierde capitán
+      burstChat("🤝 EMPATE GLOBAL (NO HAY GANADOR)");
+      burstChat("🧤 Cada equipo elige su arquero con: !arquero");
+      burstChat("🔁 Si te equivocas: !noarquero");
+      burstChat("✅ Cuando estén los 2 arqueros, el ADMIN usa: !penal");
+
+      penalesHabilitados = true;
+      keeperBlueId = null;
+      keeperRedId  = null;
+    }
+  }
+};
+// ================= PARTE 2/2 (CORREGIDA) =================
+// ✅ Pégala DESPUÉS de la PARTE 1/2
+
+// ===================================================================
+// ===================== PENALES (FIX + REPETIR TIRADOR) ==============
+// ===================================================================
+
+var penalActivo = false;
+var stopFuePenal = false;
+
+var keeperBlueId = null; // AZUL (team 2 en ese momento)
+var keeperRedId  = null; // ROJO (team 1 en ese momento)
+
+var PENAL_BASE_SHOTS = 4;
+
+var penShots = { 1: 0, 2: 0 };
+var penGoals = { 1: 0, 2: 0 };
+var penTurnTeam = 1;
+
+var penTeamIds = { 1: [], 2: [] };
+var penShooters = { 1: [], 2: [] };
+var penShooterIdx = { 1: 0, 2: 0 };
+
+var penalOriginalTeams = {};
+
+var penShooterId = null;
+var penKeeperId  = null;
+
+var penAttemptLive = false;
+var penAttemptStart = 0;
+var penShooterKickTime = 0;
+var penKeeperTouched = false;
+
+var PENAL_TOUCH_WINDOW_MS = 900;
+var lastBallPos = null;
+var lastBallMoveTime = 0;
+var PENAL_IDLE_MS = 700;
+var PENAL_MAX_MS  = 20000;
+var BALL_EPS2 = 0.20 * 0.20;
+var PENAL_MIN_CHECK_AFTER_KICK_MS = 900;
+
+var penSideFlip = 0;
+function mapTeam(logicalTeam){
+  return penSideFlip ? (logicalTeam === 1 ? 2 : 1) : logicalTeam;
+}
+
+function penPlayerById(id){
+  return room.getPlayerList().find(p=>p.id===id) || null;
+}
+function penIsInFrozenTeam(id, logicalTeam){
+  return penTeamIds[logicalTeam].indexOf(id) !== -1;
+}
+function penBuildFrozenTeams(){
+  penTeamIds[1] = room.getPlayerList().filter(p=>p.team===1).map(p=>p.id);
+  penTeamIds[2] = room.getPlayerList().filter(p=>p.team===2).map(p=>p.id);
+}
+function penBuildShootersFromFrozen(){
+  penShooters[1] = penTeamIds[1].filter(id => id !== keeperBlueId && id !== keeperRedId);
+  penShooters[2] = penTeamIds[2].filter(id => id !== keeperBlueId && id !== keeperRedId);
+  penShooterIdx[1] = 0;
+  penShooterIdx[2] = 0;
+}
+
+// repetir tirador si hay 1
+function penNextShooter(logicalTeam, keeperId){
+  let arr = penShooters[logicalTeam];
+  if(!arr || arr.length === 0) return null;
+
+  let connected = room.getPlayerList().map(p=>p.id);
+  let triesMax = arr.length + 10;
+
+  for(let tries=0; tries<triesMax; tries++){
+    let id = arr[penShooterIdx[logicalTeam] % arr.length];
+    penShooterIdx[logicalTeam]++;
+
+    if(id === keeperId) continue;
+    if(id === keeperBlueId || id === keeperRedId) continue;
+    if(connected.indexOf(id) === -1) continue;
+    if(!penIsInFrozenTeam(id, logicalTeam)) continue;
+
+    return id;
+  }
+  return null;
+}
+
+function penSetOnlyShooterAndKeeper(logicalKickTeam, shooterId, keeperId){
+  let kickReal = mapTeam(logicalKickTeam);
+  let defReal  = (kickReal === 1 ? 2 : 1);
+
+  room.getPlayerList().forEach(p => room.setPlayerTeam(p.id, 0));
+  room.setPlayerTeam(shooterId, kickReal);
+  room.setPlayerTeam(keeperId, defReal);
+}
+
+function penShowScore(){
+  let phase = (penShots[1] >= PENAL_BASE_SHOTS && penShots[2] >= PENAL_BASE_SHOTS) ? "🔥 MUERTE SÚBITA" : "🎯 PENALES (4)";
+  room.sendChat(`${phase} | 🔴 ${penGoals[1]} (${penShots[1]}) - (${penShots[2]}) ${penGoals[2]} 🔵`);
+}
+
+function penEarlyWinner(){
+  if(penShots[1] >= PENAL_BASE_SHOTS && penShots[2] >= PENAL_BASE_SHOTS) return 0;
+
+  let rS = penShots[1], bS = penShots[2];
+  let rG = penGoals[1], bG = penGoals[2];
+
+  let rRem = Math.max(0, PENAL_BASE_SHOTS - rS);
+  let bRem = Math.max(0, PENAL_BASE_SHOTS - bS);
+
+  if(rG > bG + bRem) return 1;
+  if(bG > rG + rRem) return 2;
+  return 0;
+}
+
+function penSuddenDeathWinner(){
+  if(penShots[1] === penShots[2] && penShots[1] > PENAL_BASE_SHOTS){
+    if(penGoals[1] > penGoals[2]) return 1;
+    if(penGoals[2] > penGoals[1]) return 2;
+  }
+  return 0;
+}
+
+function penResetAttemptState(){
+  penAttemptLive = true;
+  penAttemptStart = Date.now();
+  penShooterKickTime = 0;
+  penKeeperTouched = false;
+
+  lastBallPos = room.getBallPosition();
+  lastBallMoveTime = Date.now();
+}
+
+function penAfterAttemptNext(){
+  penSideFlip = penSideFlip ? 0 : 1;
+  penTurnTeam = (penTurnTeam === 1 ? 2 : 1);
+  setTimeout(penStartAttempt, 250);
+}
+
+function penFinish(winnerLogicalTeam){
+  // restaurar equipos antes de cerrar
+  for(let id in penalOriginalTeams) room.setPlayerTeam(Number(id), penalOriginalTeams[id]);
+
+  penalActivo = false;
+  penAttemptLive = false;
+
+  room.setScoreLimit(0);
+  room.setTimeLimit(0);
+
+  // reset para próxima tanda
+  keeperBlueId = null;
+  keeperRedId  = null;
+  penSideFlip  = 0;
+  penalesHabilitados = false;
+
+  let ganadorFisico = (winnerLogicalTeam === 1) ? "🔴 ROJO" : "🔵 AZUL";
+  burstLines([decoTop(), "🏁 PENALES TERMINADOS", `🏆 GANADOR POR PENALES: ${ganadorFisico}`, decoBot()]);
+
+  // ✅ convertir ganador físico -> ganador REAL (para “saca” + castigo correcto)
+  let winnerReal = physicalToRealTeamNow(winnerLogicalTeam);
+  let loserReal  = (winnerReal === 1 ? 2 : 1);
+
+  let elegido = randomPlayerFromSerieTeam(winnerReal);
+  if(elegido) burstChat(`🎲 SACA A: ${elegido.name}`);
+
+  // perdedor real a spec + capitán real pierde cargo
+  moveRealTeamToSpec(loserReal);
+  clearCaptain(loserReal);
+
+  burstChat("⛔ SERIE TERMINADA");
+  sistemaActivo = false;
+  fase = "FIN";
+}
+
+function penResolveAndNext(message){
+  if(message) room.sendChat(message);
+  penShowScore();
+
+  setTimeout(()=>{
+    stopFuePenal = true;
+    room.stopGame();
+
+    let early = penEarlyWinner();
+    if(early){ penFinish(early); return; }
+
+    if(penShots[1] >= PENAL_BASE_SHOTS && penShots[2] >= PENAL_BASE_SHOTS){
+      // si terminó justo el 4/4
+      if(penShots[1] === PENAL_BASE_SHOTS && penShots[2] === PENAL_BASE_SHOTS){
+        if(penGoals[1] > penGoals[2]) return penFinish(1);
+        if(penGoals[2] > penGoals[1]) return penFinish(2);
+      }
+
+      // muerte súbita: misma cantidad >4
+      let sd = penSuddenDeathWinner();
+      if(sd) return penFinish(sd);
+    }
+
+    penAfterAttemptNext();
+  }, 1000);
+}
+
+function penStartAttempt(){
+  if(!penalActivo) return;
+
+  let ids = room.getPlayerList().map(p=>p.id);
+  if(ids.indexOf(keeperBlueId) === -1 || ids.indexOf(keeperRedId) === -1){
+    room.sendChat("⚠️ Se fue un arquero. Vuelvan a elegir con !arquero");
+    penalActivo = false;
+    for(let id in penalOriginalTeams) room.setPlayerTeam(Number(id), penalOriginalTeams[id]);
+    keeperBlueId = null; keeperRedId = null;
+    return;
+  }
+
+  let logicalKickTeam = penTurnTeam;
+  let keeper = (logicalKickTeam === 1 ? keeperBlueId : keeperRedId);
+
+  let shooter = penNextShooter(logicalKickTeam, keeper);
+  if(!shooter){
+    room.sendChat("⚠️ Ese equipo no tiene tirador (solo arquero).");
+    penFinish(logicalKickTeam === 1 ? 2 : 1);
+    return;
+  }
+
+  penShooterId = shooter;
+  penKeeperId  = keeper;
+
+  let sp = penPlayerById(shooter);
+  let kp = penPlayerById(keeper);
+
+  let nShot = (logicalKickTeam === 1 ? penShots[1] : penShots[2]) + 1;
+  let phaseTxt = (penShots[1] >= PENAL_BASE_SHOTS && penShots[2] >= PENAL_BASE_SHOTS)
+    ? "🔥 MUERTE SÚBITA"
+    : `🎯 Penal ${nShot}/${PENAL_BASE_SHOTS}`;
+
+  qLines([
+    decoTop(),
+    `${phaseTxt} | Patea ${logicalKickTeam===1 ? "🔴 ROJO" : "🔵 AZUL"} (bando ${penSideFlip ? "INVERTIDO" : "NORMAL"})`,
+    `⚽ Tira: ${sp ? sp.name : "?"}`,
+    `🧤 Ataja: ${kp ? kp.name : "?"}`,
+    decoBot()
+  ]);
+
+  stopFuePenal = true;
+  room.stopGame();
+
+  setTimeout(()=>{
+    penSetOnlyShooterAndKeeper(logicalKickTeam, shooter, keeper);
+    room.setScoreLimit(1);
+    room.setTimeLimit(0);
+
+    penResetAttemptState();
+
+    stopFuePenal = true;
+    room.startGame();
+  }, 250);
+}
+
+function iniciarPenales(){
+  if(!penalesHabilitados){
+    room.sendChat("⚠️ Los penales solo se habilitan si el GLOBAL termina empatado.");
+    return;
+  }
+
+  penBuildFrozenTeams();
+
+  if(penTeamIds[1].length === 0 || penTeamIds[2].length === 0){
+    room.sendChat("⚠️ Debe haber jugadores en ROJO y AZUL.");
+    return;
+  }
+
+  if(!keeperBlueId || !keeperRedId){
+    room.sendChat("⚠️ Falta arquero. ROJO y AZUL deben usar !arquero");
+    return;
+  }
+  if(keeperBlueId === keeperRedId){
+    room.sendChat("❌ No puede ser el MISMO arquero para ambos.");
+    return;
+  }
+
+  if(!penIsInFrozenTeam(keeperBlueId, 2)){
+    room.sendChat("❌ El arquero AZUL no está en AZUL ahora. Vuelvan a elegir con !arquero");
+    return;
+  }
+  if(!penIsInFrozenTeam(keeperRedId, 1)){
+    room.sendChat("❌ El arquero ROJO no está en ROJO ahora. Vuelvan a elegir con !arquero");
+    return;
+  }
+
+  penalOriginalTeams = {};
+  room.getPlayerList().forEach(p=>{
+    if(p.team !== 0) penalOriginalTeams[p.id] = p.team;
+  });
+
+  penShots[1]=0; penShots[2]=0;
+  penGoals[1]=0; penGoals[2]=0;
+  penTurnTeam = 1;
+  penSideFlip = 0;
+
+  penBuildShootersFromFrozen();
+
+  if(penShooters[1].length === 0 || penShooters[2].length === 0){
+    room.sendChat("⚠️ Cada equipo debe tener AL MENOS 1 tirador (aparte del arquero).");
+    return;
+  }
+
+  penalActivo = true;
+  penalesHabilitados = false;
+
+  var kBlue = penPlayerById(keeperBlueId);
+  var kRed  = penPlayerById(keeperRedId);
+
+  qLines([
+    decoTop(),
+    "🎯 PENALES (4 TIROS C/U)",
+    `🧤 Arquero AZUL: ${kBlue ? kBlue.name : "?"}`,
+    `🧤 Arquero ROJO: ${kRed ? kRed.name : "?"}`,
+    "📌 Patea ROJO primero, luego AZUL",
+    "🔁 Si hay 1 tirador por equipo, se REPITE en sus 4 tiros",
+    decoBot()
+  ]);
+
+  penStartAttempt();
+}
+
+// detector “sin gol”
+function penTryResolveMissByBall(){
+  if(!penalActivo) return;
+  if(!penAttemptLive) return;
+  if(penShooterKickTime <= 0) return;
+
+  let now = Date.now();
+  if(now - penShooterKickTime < PENAL_MIN_CHECK_AFTER_KICK_MS) return;
+
+  let sc = room.getScores();
+  if(sc && (sc.red + sc.blue) > 0) return;
+
+  let bp = room.getBallPosition();
+
+  if(lastBallPos){
+    let dx = bp.x - lastBallPos.x;
+    let dy = bp.y - lastBallPos.y;
+    if((dx*dx + dy*dy) > BALL_EPS2){
+      lastBallMoveTime = now;
+      lastBallPos = bp;
+    }
+  } else {
+    lastBallPos = bp;
+    lastBallMoveTime = now;
+  }
+
+  if(now - penAttemptStart > PENAL_MAX_MS){
+    lastBallMoveTime = now - PENAL_IDLE_MS - 1;
+  }
+
+  if(now - lastBallMoveTime < PENAL_IDLE_MS) return;
+
+  penAttemptLive = false;
+
+  let logicalKickTeam = penTurnTeam;
+  penShots[logicalKickTeam]++;
+
+  let kp = penPlayerById(penKeeperId);
+  let sp = penPlayerById(penShooterId);
+
+  if(penKeeperTouched) penResolveAndNext(`🧤 ATAJÓ ${kp ? kp.name : "el arquero"}!`);
+  else penResolveAndNext(`❌ ERRÓ ${sp ? sp.name : "el tirador"}!`);
+}
+
+// ================= CHAT =================
+room.onPlayerChat = function(player,msg){
+  let A = parseArgs(msg);
+  let cmd = A[0] || "";
+
+  // ================== COMANDOS PÚBLICOS ==================
+  if(cmd === "!help"){
+    cmdHelp(player.id);
+    return false;
+  }
+
+  if(cmd === "!ida"){
+    cmdIda(player.id);
+    return false;
+  }
+
+  if(cmd === "!global"){
+    cmdGlobal(player.id);
+    return false;
+  }
+
+  if(cmd === "!stats"){
+    let name = A.slice(1).join(" ");
+    cmdStats(player.id, name);
+    return false;
+  }
+
+  if(cmd === "!avatar"){
+    // !avatar 😎   |   !avatar
+    if(A.length === 1){
+      setAvatarSafe(player.id, "");
+      room.sendChat(`🧑 ${player.name} quitó su avatar`);
+      return false;
+    }
+
+    let av = A[1];
+
+    // limitar longitud (evita spam)
+    if(av.length > 2){
+      room.sendChat("⚠️ Avatar demasiado largo (máx 1–2 caracteres).");
+      return false;
+    }
+
+    setAvatarSafe(player.id, av);
+    room.sendChat(`🧑 ${player.name} cambió su avatar a ${av}`);
+    return false;
+  }
+
+  // ================== AUTO-ARQUERO (TODOS) ==================
+  if(cmd === "!arquero"){
+    if(!penalesHabilitados){
+      room.sendChat("⚠️ Aún no hay penales habilitados. Solo cuando el GLOBAL empata.");
+      return false;
+    }
+    if(player.team === 0){
+      room.sendChat(`❌ ${player.name} debes estar en ROJO o AZUL para ser arquero.`);
+      return false;
+    }
+
+    // AZUL = team 2
+    if(player.team === 2){
+      if(keeperBlueId === player.id){
+        room.sendChat(`🧤 ${player.name} ya eres el arquero AZUL.`);
+        return false;
+      }
+      if(keeperBlueId && keeperBlueId !== player.id){
+        let kb = room.getPlayerList().find(p=>p.id===keeperBlueId);
+        room.sendChat(`🧤 Ya hay arquero AZUL: ${kb ? kb.name : "?"} (si se equivocó: !noarquero)`);
+        return false;
+      }
+      if(player.id === keeperRedId){
+        room.sendChat("❌ No puedes ser arquero en ambos equipos.");
+        return false;
+      }
+      keeperBlueId = player.id;
+      room.sendChat(`🧤 Arquero AZUL seteado: ${player.name}`);
+      return false;
+    }
+
+    // ROJO = team 1
+    if(player.team === 1){
+      if(keeperRedId === player.id){
+        room.sendChat(`🧤 ${player.name} ya eres el arquero ROJO.`);
+        return false;
+      }
+      if(keeperRedId && keeperRedId !== player.id){
+        let kr = room.getPlayerList().find(p=>p.id===keeperRedId);
+        room.sendChat(`🧤 Ya hay arquero ROJO: ${kr ? kr.name : "?"} (si se equivocó: !noarquero)`);
+        return false;
+      }
+      if(player.id === keeperBlueId){
+        room.sendChat("❌ No puedes ser arquero en ambos equipos.");
+        return false;
+      }
+      keeperRedId = player.id;
+      room.sendChat(`🧤 Arquero ROJO seteado: ${player.name}`);
+      return false;
+    }
+  }
+
+  if(cmd === "!noarquero"){
+    if(player.id === keeperBlueId){
+      keeperBlueId = null;
+      room.sendChat(`🧤 ${player.name} dejó de ser arquero AZUL.`);
+      return false;
+    }
+    if(player.id === keeperRedId){
+      keeperRedId = null;
+      room.sendChat(`🧤 ${player.name} dejó de ser arquero ROJO.`);
+      return false;
+    }
+    room.sendChat("❌ No eres arquero.");
+    return false;
+  }
+
+  // ================== CAMBIO (SOLO CAPITANES) ==================
+  let capTeam = captainRealTeamOfPlayer(player);
+
+  if(cmd === "!cambio"){
+    if(!sistemaActivo || fase === "FIN"){
+      room.sendChat("⚠️ No hay serie activa.");
+      return false;
+    }
+    if(capTeam === 0){
+      room.sendChat("❌ Solo capitanes pueden usar !cambio.");
+      return false;
+    }
+    if(cambioUsado[capTeam]){
+      room.sendChat("❌ Ya usaste el ÚNICO cambio de tu equipo en esta serie.");
+      return false;
+    }
+    if(penalActivo){
+      room.sendChat("⛔ No durante penales.");
+      return false;
+    }
+
+    if(A.length < 2){
+      room.sendChat('Uso: !cambio "Sale" ["Entra"]  (si no pones Entra, entra 1 espectador al azar)');
+      return false;
+    }
+
+    let outName = A[1];
+    let outP = findPlayerByName(outName);
+    if(!outP){ room.sendChat("❌ No encuentro a: " + outName); return false; }
+
+    // Debe estar jugando (no espectador)
+    if(outP.team === 0){
+      room.sendChat("❌ El que SALE debe estar jugando (no espectador).");
+      return false;
+    }
+
+    // no permitir sacar al capitán
+    if(outP.id === capitan[capTeam]){
+      room.sendChat("❌ No puedes sacarte a ti mismo (capitán).");
+      return false;
+    }
+
+    // Solo puede sacar a alguien de SU equipo real de la serie
+    if(serieTeamOf[outP.id] !== capTeam){
+      room.sendChat("❌ Ese jugador no es de tu equipo (serie).");
+      return false;
+    }
+
+    let inP = null;
+    if(A.length >= 3){
+      let inName = A[2];
+      inP = findPlayerByName(inName);
+      if(!inP){ room.sendChat("❌ No encuentro a: " + inName); return false; }
+      if(inP.team !== 0){ room.sendChat("❌ El que ENTRA debe estar de ESPECTADOR."); return false; }
+    } else {
+      let specs = room.getPlayerList().filter(p=>p.team===0);
+      if(specs.length === 0){ room.sendChat("❌ No hay espectadores para entrar."); return false; }
+      inP = specs[Math.floor(Math.random()*specs.length)];
+    }
+
+    // no permitir meter un capitán
+    if(inP.id === capitan[1] || inP.id === capitan[2]){
+      room.sendChat("❌ Ese jugador es capitán, no puede entrar por cambio.");
+      return false;
+    }
+
+    // ✅ Si el partido está corriendo, pausamos un toque para que el cambio sea limpio
+    let sc = room.getScores();
+    let alreadyPaused = enPausa === true;
+    if(sc && !alreadyPaused) room.pauseGame(true);
+
+    // ✅ equipo físico correcto según momento (incluye transición IDA->VUELTA)
+    let physTeam = realToPhysicalTeamNow(capTeam);
+
+    room.setPlayerTeam(outP.id, 0);
+    room.setPlayerTeam(inP.id, physTeam);
+
+    // actualizar identidad de serie para el GLOBAL
+    delete serieTeamOf[outP.id];
+    serieTeamOf[inP.id] = capTeam;
+
+    cambioUsado[capTeam] = true;
+
+    room.sendChat(`🔁 CAMBIO ${capTeam===1?"🔴":"🔵"}: SALE ${outP.name} / ENTRA ${inP.name} ✅ (1 cambio usado)`);
+
+    if(sc && !alreadyPaused){
+      setTimeout(()=> room.pauseGame(false), 250);
+    }
+
+    return false;
+  }
+
+  // ================== ADMIN ONLY (TODO LO DEMÁS) ==================
+  if(!player.admin) return true;
+
+  if(cmd === "!time"){
+    if(A.length < 2){
+      room.sendChat("Uso: !time x2 | x3 | x4");
+      return false;
+    }
+
+    let s = room.getScores();
+    if(!s){
+      room.sendChat("⚠️ No hay partido activo.");
+      return false;
+    }
+
+    let diff = Math.abs(s.blue - s.red);
+    if(diff < 4){
+      room.sendChat("⚠️ Solo puedes acelerar si hay diferencia de 4 goles o más.");
+      return false;
+    }
+
+    let mult = parseInt(A[1].replace("x",""));
+    if(![2,3,4].includes(mult)){
+      room.sendChat("⚠️ Valores permitidos: x2, x3, x4");
+      return false;
+    }
+
+    timeMultiplier = mult;
+    room.sendChat(`⏩ TIEMPO ACELERADO x${mult}`);
+    return false;
+  }
+
+  if(cmd === "!timeoff"){
+    timeMultiplier = 1;
+    room.sendChat("⏱️ Tiempo normal restaurado");
+    return false;
+  }
+
+  // ---------- CAPITÁN / NO CAPITÁN (solo admin) ----------
+  if(cmd === "!capitan"){
+    if(A.length < 2){ room.sendChat('Uso: !capitan "Nombre exacto"'); return false; }
+
+    let target = findPlayerByName(A[1]);
+    if(!target){ room.sendChat("❌ Jugador no encontrado"); return false; }
+    if(target.team === 0){ room.sendChat("❌ Debe estar en ROJO o AZUL."); return false; }
+
+    let realTeam = sistemaActivo
+      ? (serieTeamOf[target.id] != null ? serieTeamOf[target.id] : physicalToRealTeamNow(target.team))
+      : target.team;
+
+    if(realTeam !== 1 && realTeam !== 2){
+      room.sendChat("❌ No se pudo determinar el equipo real.");
+      return false;
+    }
+
+    if(capitan[realTeam] && capitan[realTeam] !== target.id){
+      room.sendChat(`❌ Ya hay CAPITÁN ${realTeam===1?"ROJO":"AZUL"}: ${getNameById(capitan[realTeam])}`);
+      return false;
+    }
+
+    if(capitan[1] === target.id && realTeam !== 1) clearCaptain(1);
+    if(capitan[2] === target.id && realTeam !== 2) clearCaptain(2);
+
+    setCaptain(realTeam, target.id);
+    room.sendChat(`🧢 Capitán ${realTeam===1?"🔴 ROJO":"🔵 AZUL"} asignado: ${target.name}`);
+    return false;
+  }
+
+  if(cmd === "!nocapitan"){
+    if(A.length < 2){ room.sendChat('Uso: !nocapitan "Nombre exacto"'); return false; }
+
+    let target = findPlayerByName(A[1]);
+    if(!target){ room.sendChat("❌ Jugador no encontrado (debe estar conectado)."); return false; }
+
+    if(capitan[1] === target.id){ clearCaptain(1); room.sendChat(`🧢 ${target.name} ya no es CAPITÁN ROJO.`); return false; }
+    if(capitan[2] === target.id){ clearCaptain(2); room.sendChat(`🧢 ${target.name} ya no es CAPITÁN AZUL.`); return false; }
+
+    room.sendChat("❌ Ese jugador no es capitán.");
+    return false;
+  }
+
+  // ---------- (manual por si quieres, pero auto-arquero ya existe) ----------
+  if(cmd === "!tapa" && A.length >= 2){
+    let target = findPlayerByName(A[1]);
+    if(!target){ room.sendChat("❌ Jugador no encontrado"); return false; }
+
+    if(!keeperBlueId){
+      keeperBlueId = target.id;
+      room.sendChat(`🧤 Arquero AZUL seteado: ${target.name}`);
+    } else if(!keeperRedId){
+      if(target.id === keeperBlueId){
+        room.sendChat("❌ Ese ya es el arquero AZUL. El ROJO debe ser otro.");
+        return false;
+      }
+      keeperRedId = target.id;
+      room.sendChat(`🧤 Arquero ROJO seteado: ${target.name}`);
+    } else {
+      if(target.id === keeperBlueId){
+        room.sendChat("❌ Ese ya es el arquero AZUL. El ROJO debe ser otro.");
+        return false;
+      }
+      keeperRedId = target.id;
+      room.sendChat(`🧤 Arquero ROJO actualizado: ${target.name}`);
+    }
+    return false;
+  }
+
+  if(cmd === "!penal"){
+    iniciarPenales();
+    return false;
+  }
+
+  if(cmd === "!on"){
+    // reset penales
+    penalActivo = false;
+    penAttemptLive = false;
+    penalOriginalTeams = {};
+    keeperBlueId = null;
+    keeperRedId  = null;
+    penSideFlip = 0;
+
+    // reset habilitación de penales
+    penalesHabilitados = false;
+
+    // reset cambios
+    cambioUsado = { 1:false, 2:false };
+
+    // ✅ reset serie global
+    serieTeamOf = {};
+    serieGoals = {1:0, 2:0};
+    serieLabel = {1:"🔴 ROJO (IDA)", 2:"🔵 AZUL (IDA)"};
+
+    // congelar identidad real de cada jugador al prender sistema
+    room.getPlayerList().forEach(p=>{
+      if(p.team === 1) serieTeamOf[p.id] = 1;
+      if(p.team === 2) serieTeamOf[p.id] = 2;
+    });
+
+    // ✅ NO borrar capitanes por swap/teams; SOLO si ya no están conectados
+    if(capitan[1]){
+      let p1 = room.getPlayerList().find(p=>p.id===capitan[1]);
+      if(!p1) clearCaptain(1);
+    }
+    if(capitan[2]){
+      let p2 = room.getPlayerList().find(p=>p.id===capitan[2]);
+      if(!p2) clearCaptain(2);
+    }
+
+    sistemaActivo = true;
+    fase = "IDA";
+    idaScore = {blue:0, red:0};
+    idaTermino = false;
+
+    vueltaConEquiposInvertidos = false;
+    bloqueo = false;
+
+    goles={}; asistencias={}; autogoles={}; tiempo={}; racha={};
+    ultimoGol=null; ultimoTocador=null; penultimoTocador=null;
+    ultimoTocadorTime=0; penultimoTocadorTime=0;
+
+    jugoIda.clear(); jugoVuelta.clear();
+    resetPorPartido();
+
+    room.setTimeLimit(0);
+    room.setScoreLimit(0);
+
+    qChat("IDA & VUELTA");
+    qChat("⏱️ Regla: 120s + extra (20/25/30)");
+    qChat("🧢 Capitanes: ADMIN !capitan / !nocapitan | Capitanes: !cambio (1 por serie)");
+    qChat("🎯 Penales (solo si GLOBAL empata): !arquero / !noarquero y luego ADMIN: !penal");
+
+    room.stopGame();
+    room.startGame();
+    return false;
+  }
+
+  if(cmd === "!off"){
+    sistemaActivo=false;
+    penalesHabilitados=false;
+    keeperBlueId=null;
+    keeperRedId=null;
+    idaTermino = false;
+
+    room.sendChat("🔁 Reinicio cuto de MRD");
+    return false;
+  }
+
+  return true;
+};
+
+// ================= LIMPIAR ARQUEROS/CAPITANES SI SE VAN =================
+room.onPlayerLeave = function(p){
+  if(p.id === keeperBlueId) keeperBlueId = null;
+  if(p.id === keeperRedId)  keeperRedId  = null;
+
+  if(p.id === capitan[1]) clearCaptain(1);
+  if(p.id === capitan[2]) clearCaptain(2);
+};
+
+// ================= (opcional) si alguien entra a equipo en medio de serie y no estaba mapeado =================
+room.onPlayerTeamChange = function(changedPlayer){
+  if(!sistemaActivo) return;
+
+  if(changedPlayer.team !== 0 && serieTeamOf[changedPlayer.id] == null){
+    serieTeamOf[changedPlayer.id] = physicalToRealTeamNow(changedPlayer.team);
+  }
+};
+
+room.onPlayerJoin = p=>{
+
+  // si quieres admin especial, lo mantienes igual
+  if(p.name==="ELBUENDELIPRIME") room.setPlayerAdmin(p.id,true);
+
+  // bienvenida en 3 mensajes (con delay para que cargue auth)
+  setTimeout(()=> sendBienvenida3(p), 700);
+};
