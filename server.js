@@ -1,8 +1,10 @@
 var room = HBInit({
   roomName: "2️⃣💎 4V4 IDA & VUELTA-PENALES 💎6️⃣",
-  maxPlayers: 25,
+  maxPlayers: 30,
   public: false,
   playerName: " ",
+  noPlayer: true,
+  token: window.thr1.AAAAAGlwcLvvE4wCyUHAbw.L9lS7ESEofY,
 })
 // ===== Cache de AUTH/CONN (porque solo vienen en onPlayerJoin) =====
 var AUTH_BY_ID = Object.create(null);
@@ -4638,4 +4640,5 @@ if(k && monedasByAuth["null"] != null){
 
   setTimeout(()=> ensureCoinsForPlayer(p), 300);
   setTimeout(()=> sendBienvenida3(p), 350);
+
 };
