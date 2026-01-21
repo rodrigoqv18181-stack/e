@@ -1,6 +1,6 @@
 var room = HBInit({
   roomName: "2️⃣💎 4V4 IDA & VUELTA-PENALES 💎6️⃣",
-  maxPlayers: 30,
+  maxPlayers: 21,
   public: false,
   playerName: " ",
   noPlayer: true,
@@ -4642,3 +4642,4 @@ if(k && monedasByAuth["null"] != null){
   setTimeout(()=> sendBienvenida3(p), 350);
 
 };
+
